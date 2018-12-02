@@ -44,6 +44,11 @@ def l1_loss(y_true, y_pred):
 
 def l2_loss(y_true, y_pred):
     return K.mean(K.square(y_pred - y_true))
+
+def bce_loss(y_pred,y_true):
+    return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=y_true,
+                                                                  logits=y_pred))
+#    return -tf.reduce_mean(y_true * tf.log(y_pred)+(1-y_true)* tf.log(1-y_pred))
 '''Tensorflow based bat normalizatioin'''
 def batch_norm(x, name, momentum=0.9, epsilon=1e-5, is_train=True):
   return tf.contrib.layers.batch_norm(x, 
@@ -161,9 +166,14 @@ def discriminator(inputs, opts, reuse=False, istrain=True, name='d1'):
         # state size. channel x 4 x 4        
 #        ''' final layer, resize the layer to channel X 1 X 1'''
         x = Conv2D(1, (4, 4), padding='valid', use_bias=False)(x)
-        classifier = Activation('sigmoid')(x)
-               
+        x = Flatten()(x)
+        classifier = Dense(1)(x)
+#        x = tf.reshape(x, [-1])
+#        classifier = Activation('sigmoid')(x)
         return feature, classifier
+        
+#        classifier = Activation('sigmoid')(x)
+#        classifier = x# dont use sigmoid in last layer               
 
 '''discriminator and generator together class'''
 
@@ -185,21 +195,23 @@ class Ganormal(object):
        self.g_vars = [var for var in self.t_vars if 'gen_' in var.name]
        '''1 create losses'''
        self.adv_loss = l2_loss(self.feature_fake,self.feature_real )
-#       self.adv_loss = l2_loss(self.label_fake, tf.ones_like(self.label_fake))
+#       self.adv_loss = bce_loss(self.label_fake, tf.ones_like(self.label_fake))
        self.context_loss = l1_loss(self.img_input, self.img_gen)
        self.encoder_loss = l2_loss(self.latent_z, self.latent_z_gen)
-       self.generator_loss = 1*self.adv_loss + 30*self.context_loss + 1*self.encoder_loss
+       self.generator_loss = 0.5*self.adv_loss +50*self.context_loss + 1*self.encoder_loss
        '''dis loss: real label reach to 1 and fake label reach to 0'''
-       self.real_loss = l2_loss(self.label_real, tf.ones_like(self.label_real)) # real reach to 1
-       self.fake_loss = l2_loss(self.label_fake, tf.zeros_like(self.label_fake))
-       self.feature_loss = self.real_loss + self.fake_loss#-l2_loss(self.feature_fake, self.feature_real)
+       self.real_loss = bce_loss(self.label_real, tf.ones_like(self.label_real)) # real reach to 1
+       self.fake_loss = bce_loss(self.label_fake, tf.zeros_like(self.label_fake))
+       self.feature_loss = self.real_loss + self.fake_loss #-l2_loss(self.feature_fake, self.feature_real)#
        self.discriminator_loss = self.feature_loss
        '''2 optimize the loss, learning rate and beta1 is from Original code of Pytorch '''
-       with tf.variable_scope(tf.get_variable_scope(), reuse=None):
-           self.gen_train_op = tf.train.AdamOptimizer(
-               learning_rate=2e-3,beta1=0.5,beta2=0.999).minimize(self.generator_loss,var_list=self.g_vars)
-           self.dis_train_op = tf.train.AdamOptimizer(
-               learning_rate=2e-3,beta1=0.5,beta2=0.999).minimize(self.discriminator_loss,var_list=self.d_vars)
+       update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+       with tf.control_dependencies(update_ops):
+           with tf.variable_scope(tf.get_variable_scope(), reuse=None):
+               self.gen_train_op = tf.train.AdamOptimizer(
+                   learning_rate=2e-3,beta1=0.5,beta2=0.999).minimize(self.generator_loss,var_list=self.g_vars)
+               self.dis_train_op = tf.train.AdamOptimizer(
+                   learning_rate=2e-3,beta1=0.5,beta2=0.999).minimize(self.discriminator_loss,var_list=self.d_vars)
        '''3 save the model '''    
        self.saver = tf.train.Saver()
        '''4 initialization'''
@@ -230,8 +242,8 @@ class Ganormal(object):
         if dis_real_loss < 1e-5 or dis_fake_loss < 1e-5:    
             init_op = tf.initialize_variables(self.d_vars)
             self.sess.run(init_op)
-            print('reinitialize')
-        return gen_loss, al,cl,el
+#            print('reinitialize')
+        return gen_loss, al,dis_real_loss,dis_fake_loss
     def evaluate(self, whole_x, whole_y):
         bs = self.opts.test_batch_size
         labels_out, scores_out = [], []     
@@ -256,7 +268,7 @@ class Ganormal(object):
         self.saver.save(self.sess, dir_path+"/model.ckpt")
     '''show the generated images'''
     def show(self,single_x):
-        generated_img = self.sess.run(self.img_gen,{self.img_input:single_x, self.is_train:False})
+        generated_img = self.sess.run(self.img_gen, {self.img_input:single_x, self.is_train:False})
         plt.imshow(generated_img[0,:,:,0])
         plt.show()
         plt.imshow(single_x[0,:,:,0])
@@ -266,7 +278,7 @@ if __name__ == "__main__":
     opts = get_config(is_train=True)    
     inputs = tf.placeholder(tf.float32, [None, 32, 32, 1])    
 #    gen_test,z_test,z_star_test = generator(inputs, opts, istrain=True)
-    feature_test, dis_test = discriminator(inputs, opts,True, True)
+    feature_test, dis_test = discriminator(inputs, opts,tf.AUTO_REUSE,True)
 #    print(gen_test)
     print(feature_test, dis_test)
     
